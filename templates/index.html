@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG 聊天機器人</title>
+    <link rel="stylesheet" href="/static/css/index.css">
+    <!-- 引入外部庫 -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@2.3.8/dist/purify.min.js"></script>
+</head>
+<body>
+    <!-- 頭部信息 -->
+    <div class="header">
+        <h1>RAG 聊天機器人</h1>
+        <div class="db-info">
+            <span>數據庫：{{ db_info.db_dir }}</span>
+            <span>集合：{{ db_info.collection_name }}</span>
+            <span class="db-status">{{ db_info.status }}</span>
+        </div>
+        <a href="http://127.0.0.1:5001/api/debug/chunks_with_overlap" target="_blank" class="debug-button">
+            分塊視覺化
+        </a>
+    </div>
+    
+    <!-- 響應式顯示的數據庫信息 -->
+    <div class="db-info-mobile" style="display: none;">
+        <span>集合：{{ db_info.collection_name }}</span>
+        <span class="db-status">{{ db_info.status }}</span>
+    </div>
+    
+    <!-- 主要容器 -->
+    <div class="container">
+        <!-- 左側聊天區域 -->
+        <div class="chat-container">
+            <div class="chat-messages" id="chatMessages">
+                <!-- 歡迎消息 -->
+                <div class="message bot-message">
+                    <div class="message-content">您好！我是 RAG 聊天機器人。我可以根據已載入的文檔回答您的問題。請輸入您的問題！</div>
+                </div>
+            </div>
+            <div class="chat-input">
+                <input type="text" id="userInput" placeholder="請輸入您的問題..." autocomplete="off">
+                <button id="sendButton">發送</button>
+            </div>
+        </div>
+        
+        <!-- 右側搜尋結果區域 -->
+        <div class="search-results">
+            <h2>檢索結果</h2>
+            <div id="searchResultsContainer">
+                <div class="no-results">
+                    提問後，這裡將顯示用於回答的文檔片段。
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/static/js/index.js"></script>
+</body>
+</html>

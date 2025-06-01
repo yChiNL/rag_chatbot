@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文檔分塊視覺化</title>
+    <link rel="stylesheet" href="/static/css/chunks_view.css">
+</head>
+<body>
+    <div class="container">
+        <h1>文檔分塊視覺化</h1>
+        
+        <div class="search-box">
+            <input type="text" id="searchInput" placeholder="輸入關鍵字進行搜索..." onkeyup="searchInChunks()">
+        </div>
+        
+        {% for doc in results %}
+        <div class="document">
+            <div class="document-header">
+                <h2 class="document-title">{{ doc.filename }}</h2>
+                <div class="document-stats">
+                    總長度: {{ doc.total_length }} | 分塊數: {{ doc.chunk_count }} | 
+                    分塊大小: {{ doc.chunk_size }} | 重疊: {{ doc.chunk_overlap }}
+                </div>
+            </div>
+            
+            {% for chunk in doc.chunks %}
+            <div class="chunk{% if chunk.contains_image %} contains-image{% endif %}" id="chunk-{{ chunk.chunk_id }}">
+                <div class="chunk-header">
+                    <div class="chunk-id">
+                        {{ chunk.chunk_id }} (第 {{ chunk.index + 1 }} 塊)
+                    </div>
+                    <div class="chunk-stats">
+                        位置: {{ chunk.start }}-{{ chunk.end }} | 
+                        長度: {{ chunk.length }} | 
+                        {% if chunk.has_overlap %}
+                        <span style="color: #e74c3c;">重疊: {{ chunk.overlap_length }} 字元</span>
+                        {% else %}
+                        <span>無重疊</span>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="chunk-content">{{ chunk.html|safe }}</div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endfor %}
+    </div>
+    
+    <div class="controls">
+        <label for="chunkSize">分塊大小:</label>
+        <input type="number" id="chunkSize" value="{{ results[0].chunk_size if results else 512 }}">
+        
+        <label for="overlapSize">重疊大小:</label>
+        <input type="number" id="overlapSize" value="{{ results[0].chunk_overlap if results else 128 }}">
+                
+        <button onclick="reloadWithParams()">重新分塊</button>
+    </div>
+    
+    <script src="/static/js/chunks_view.js"></script>
+</body>
+</html>

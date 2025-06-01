@@ -1,0 +1,8 @@
+pypdf>=5.5.0
+langchain>=0.3.25
+chromadb>=1.0.12
+openai>=1.82.1
+flask>=3.1.1
+pdf2image>=1.17.0
+poppler>=21.10.0
+pdfplumber>=0.11.6
