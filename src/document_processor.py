@@ -17,7 +17,7 @@ from config import (
     AZURE_OPENAI_API_KEY,
     AZURE_OPENAI_ENDPOINT,
     AZURE_OPENAI_VERSION,
-    AZURE_VERSION_DEPLOYMENT_NAME,
+    AZURE_VISION_MINI_DEPLOYMENT_NAME,
     IMAGE_CACHE_DIR
 )
 
@@ -51,9 +51,9 @@ class DocumentProcessor:
             image.save(img_byte_arr, format='PNG')
             img_bytes = img_byte_arr.getvalue()
             
-            # 使用GPT-4o生成描述
+            # 使用GPT-4o-mini生成描述
             response = client.chat.completions.create(
-                model=AZURE_VERSION_DEPLOYMENT_NAME,
+                model=AZURE_VISION_MINI_DEPLOYMENT_NAME,
                 messages=[
                     {
                         "role": "system",
