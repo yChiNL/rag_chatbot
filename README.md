@@ -49,7 +49,35 @@ RAG 聊天機器人是一個基於檢索增強生成（Retrieval-Augmented Gener
     pip install -r requirements.txt
     ```
 
-4. **配置 Azure OpenAI 環境變數**
+4. **安裝 Poppler**
+
+    因Windows與Mac安裝方法不同，因此無列於`requirements.txt`中 (Release Version>=21.10.0)
+    
+    - macOS：
+    使用 Homebrew 安裝：
+    
+    ```bash
+    brew install poppler
+    ```
+
+    - Windows：
+    1. 下載 Poppler 編譯包:
+
+        前往 [Poppler Windows Release](https://github.com/oschwartz10612/poppler-windows/releases) 下載最新版本的 poppler-xxx_x64.zip 文件。
+
+    2. 解壓文件:
+
+        將文件解壓到指定目錄（例如：`C:\Program Files\poppler`）。
+
+    3. 配置系統 PATH:
+
+        添加 Poppler 的 bin 文件夾到環境變數：
+
+        - 打開「系統環境變量」設置，編輯 PATH。
+        - 添加 Poppler 的 bin 路徑，例如：C:\Program Files\poppler\bin。
+        - 保存並重啟終端。
+
+5. **配置 Azure OpenAI 環境變數**
 
     建立 `.env` 文件並添加以下內容：
 
@@ -62,7 +90,7 @@ RAG 聊天機器人是一個基於檢索增強生成（Retrieval-Augmented Gener
     AZURE_OPENAI_VERSION=your_api_version
     ```
 
-5. **放置 PDF 文檔**
+6. **放置 PDF 文檔**
 
     將需要查詢的 PDF 文檔放入 `data/documents/` 目錄中。
 
