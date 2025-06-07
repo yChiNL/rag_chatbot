@@ -1,5 +1,9 @@
+# vector_store.py
 import os
 import logging
+import hashlib
+import json
+import time
 import chromadb
 from typing import List, Dict, Optional
 from openai import AzureOpenAI
@@ -10,42 +14,181 @@ from config import (
     AZURE_OPENAI_VERSION
 )
 
+# 定義緩存目錄
+EMBEDDING_CACHE_DIR = os.path.join(os.path.dirname(__file__), "../data/embedding_cache")
+
 # 獲取logger
 logger = logging.getLogger(__name__)
 
 class EmbeddingGenerator:
-    """向量嵌入生成器"""
+    """向量嵌入生成器，包含緩存功能"""
     
     def __init__(self):
-        """初始化Azure OpenAI嵌入客戶端"""
+        """初始化Azure OpenAI嵌入客戶端以及緩存系統"""
         self.client = AzureOpenAI(
             api_key=AZURE_OPENAI_API_KEY,
             azure_endpoint=AZURE_OPENAI_ENDPOINT,
             api_version=AZURE_OPENAI_VERSION
         )
         self.deployment_name = AZURE_EMBEDDING_DEPLOYMENT_NAME
+        
+        # 確保緩存目錄存在
+        os.makedirs(EMBEDDING_CACHE_DIR, exist_ok=True)
+        self.cache_info_path = os.path.join(EMBEDDING_CACHE_DIR, "cache_info.json")
+        self.cache_info = self._load_cache_info()
+        
         logger.info(f"嵌入生成器初始化完成，使用部署: {self.deployment_name}")
+        logger.info(f"嵌入緩存目錄: {EMBEDDING_CACHE_DIR}")
+        logger.info(f"載入了 {len(self.cache_info)} 個緩存項")
+    
+    def _load_cache_info(self) -> Dict:
+        """載入緩存信息"""
+        if os.path.exists(self.cache_info_path):
+            try:
+                with open(self.cache_info_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(f"載入緩存信息時出錯: {e}，將創建新的緩存")
+        return {}
+    
+    def _save_cache_info(self):
+        """保存緩存信息"""
+        try:
+            with open(self.cache_info_path, 'w', encoding='utf-8') as f:
+                json.dump(self.cache_info, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"保存緩存信息時出錯: {e}")
+    
+    def _get_text_hash(self, text: str) -> str:
+        """計算文本的雜湊值作為緩存鍵"""
+        return hashlib.md5(text.encode('utf-8')).hexdigest()
+    
+    def _get_from_cache(self, text_hash: str) -> Optional[List[float]]:
+        """從緩存中獲取向量嵌入"""
+        if text_hash in self.cache_info:
+            cache_file = os.path.join(EMBEDDING_CACHE_DIR, f"{text_hash}.json")
+            if os.path.exists(cache_file):
+                try:
+                    with open(cache_file, 'r', encoding='utf-8') as f:
+                        return json.load(f)
+                except Exception as e:
+                    logger.warning(f"讀取緩存文件 {text_hash} 時出錯: {e}")
+        return None
+    
+    def _save_to_cache(self, text_hash: str, embedding: List[float]):
+        """將向量嵌入保存到緩存"""
+        cache_file = os.path.join(EMBEDDING_CACHE_DIR, f"{text_hash}.json")
+        try:
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump(embedding, f)
+            
+            # 更新緩存信息
+            self.cache_info[text_hash] = {
+                "timestamp": time.time(),
+                "size": len(embedding)
+            }
+            self._save_cache_info()
+        except Exception as e:
+            logger.warning(f"保存緩存文件 {text_hash} 時出錯: {e}")
     
     def generate_embeddings(self, texts: List[str]) -> List[Optional[List[float]]]:
-        """為一組文本生成嵌入向量"""
+        """為一組文本生成嵌入向量，優先從緩存中獲取"""
         if not texts:
             logger.warning("嘗試為空文本列表生成嵌入")
             return []
             
         try:
-            logger.info(f"正在為 {len(texts)} 個文本生成嵌入...")
-            response = self.client.embeddings.create(
-                input=texts,
-                model=self.deployment_name
-            )
-            # 從回應獲取嵌入向量
-            embeddings = [item.embedding for item in response.data]
-            logger.info(f"成功生成 {len(embeddings)} 個嵌入向量")
-            return embeddings
+            logger.info(f"處理 {len(texts)} 個文本的嵌入向量...")
+            
+            # 先檢查哪些文本可以從緩存獲取
+            results = []
+            texts_to_generate = []
+            hashes = []
+            cache_hits = 0
+            
+            for text in texts:
+                text_hash = self._get_text_hash(text)
+                cached_embedding = self._get_from_cache(text_hash)
+                
+                if cached_embedding:
+                    results.append(cached_embedding)
+                    cache_hits += 1
+                else:
+                    results.append(None)  # 先填入None，稍後替換
+                    texts_to_generate.append(text)
+                    hashes.append(text_hash)
+            
+            logger.info(f"緩存命中率: {cache_hits}/{len(texts)} ({cache_hits/len(texts)*100:.2f}%)")
+            
+            # 如果所有文本都從緩存獲取了，直接返回
+            if not texts_to_generate:
+                logger.info(f"所有 {len(texts)} 個嵌入向量均從緩存獲取")
+                return results
+            
+            # 處理未緩存的文本，使用批次處理和錯誤重試
+            logger.info(f"需要生成 {len(texts_to_generate)} 個新嵌入向量")
+            
+            batch_size = 50  # 每次處理50個文本
+            for i in range(0, len(texts_to_generate), batch_size):
+                batch_texts = texts_to_generate[i:i+batch_size]
+                batch_hashes = hashes[i:i+batch_size]
+                logger.info(f"處理批次 {i//batch_size + 1}/{(len(texts_to_generate)-1)//batch_size + 1}，包含 {len(batch_texts)} 個文本")
+                
+                # 嘗試處理當前批次，如果遇到限流問題則增加等待時間
+                max_retries = 5
+                retry_count = 0
+                retry_delay = 5  # 初始延遲5秒
+                
+                while retry_count < max_retries:
+                    try:
+                        response = self.client.embeddings.create(
+                            input=batch_texts,
+                            model=self.deployment_name
+                        )
+                        # 從回應獲取嵌入向量
+                        batch_embeddings = [item.embedding for item in response.data]
+                        
+                        # 更新結果並保存到緩存
+                        for j, (text_hash, embedding) in enumerate(zip(batch_hashes, batch_embeddings)):
+                            # 找回原始索引位置
+                            original_idx = texts.index(texts_to_generate[i+j])
+                            results[original_idx] = embedding
+                            
+                            # 保存到緩存
+                            self._save_to_cache(text_hash, embedding)
+                        
+                        # 成功處理後等待1秒避免過快發送下一批請求
+                        time.sleep(1)
+                        break
+                        
+                    except Exception as e:
+                        if "429" in str(e) or "rate limit" in str(e).lower():
+                            retry_count += 1
+                            logger.warning(f"遇到API限流，第{retry_count}次重試，等待{retry_delay}秒...")
+                            time.sleep(retry_delay)
+                            retry_delay *= 2  # 指數退避，每次失敗後翻倍等待時間
+                        else:
+                            logger.error(f"生成嵌入時出錯: {str(e)}", exc_info=True)
+                            # 為這批次的所有項設置為None
+                            for j in range(len(batch_texts)):
+                                original_idx = texts.index(texts_to_generate[i+j])
+                                results[original_idx] = None
+                            break
+                
+                if retry_count >= max_retries:
+                    logger.error(f"批次處理重試次數已超過上限，跳過此批次")
+                    for j in range(len(batch_texts)):
+                        original_idx = texts.index(texts_to_generate[i+j])
+                        results[original_idx] = None
+            
+            # 報告最終結果
+            successful_count = len([r for r in results if r is not None])
+            logger.info(f"成功處理 {successful_count}/{len(texts)} 個嵌入向量")
+            
+            return results
             
         except Exception as e:
             logger.error(f"生成嵌入時出錯: {str(e)}", exc_info=True)
-            
             return [None] * len(texts)
 
 class ChromaVectorStore:

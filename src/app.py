@@ -77,13 +77,21 @@ def chat():
             'docs': []
         })
 
-def process_pdf_documents():
-    """處理PDF文檔並返回文本塊"""
-    logger.info("正在加載和分塊PDF文檔...")
+def process_documents():
+    """
+    加載並處理目錄中的文檔，生成文本塊。
+    包括:
+        - PDF 文件
+        - CSV 文件（資料探勘邏輯）
+    Returns:
+        List[Dict]: 包含文本塊的列表
+    """
+    logger.info("正在加載並處理文檔...")
+
     try:
-        chunks = DocumentProcessor.process_documents(PDF_DIR)
+        chunks = DocumentProcessor.process_documents(PDF_DIR, use_inline_images=True)
         if not chunks:
-            logger.error("未能從PDF文檔中提取任何文本塊")
+            logger.error("未能從任何文檔中提取任何文本塊")
             return None
         logger.info(f"已成功生成 {len(chunks)} 個文本塊")
         return chunks
@@ -92,7 +100,14 @@ def process_pdf_documents():
         return None
 
 def create_vector_embeddings(vector_store, chunks):
-    """將文本塊轉換為向量嵌入並存儲"""
+    """
+    將文本塊轉換為向量嵌入並存儲。
+    Args:
+        vector_store (ChromaVectorStore): 向量存儲的對象
+        chunks (List[Dict]): 文檔分塊
+    Returns:
+        int: 成功添加的向量嵌入數量
+    """
     logger.info("正在生成向量嵌入並添加到數據庫...")
     try:
         added_count = vector_store.add_documents(chunks)
@@ -152,8 +167,8 @@ def initialize_system():
             logger.info("開始檢查並處理文檔以建立向量數據庫...")
             db_info['status'] = '正在創建...'
             
-            # 處理PDF文檔
-            chunks = process_pdf_documents()
+            # 處理 PDF 和 CSV 文件
+            chunks = process_documents()
             if not chunks:
                 db_info['status'] = '錯誤：文檔處理失敗'
                 return False

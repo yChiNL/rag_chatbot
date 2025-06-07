@@ -7,6 +7,7 @@ import pypdf
 import io
 import pdfplumber
 import re
+from Preprocessing import DataMiningProcessor
 from typing import List, Dict
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from pdf2image import convert_from_path
@@ -277,48 +278,144 @@ class DocumentProcessor:
         return documents
 
     @staticmethod
-    def split_documents(documents: List[Dict], chunk_size: int = CHUNK_SIZE,
-                       chunk_overlap: int = CHUNK_OVERLAP) -> List[Dict]:
+    def load_csv_documents(directory: str) -> List[Dict]:
+        """加載所有 CSV 檔案並進行資料前處理"""
+        documents = []
+        csv_files = [f for f in os.listdir(directory) if f.lower().endswith('.csv')]
+
+        if not csv_files:
+            logger.warning(f"在目錄 '{directory}' 中未找到任何 CSV 檔案。")
+            return []
+
+        logger.info(f"在 '{directory}' 中找到 {len(csv_files)} 個 CSV 檔案")
+
+        for filename in csv_files:
+            file_path = os.path.join(directory, filename)
+            try:
+                logger.info(f"開始處理 CSV 檔案: {filename}")
+                processed_data = DataMiningProcessor.preprocess_csv(file_path) # 使用資料探勘進行前處理
+                documents.append({
+                    "filename": filename,
+                    "path": file_path,
+                    "text": processed_data,
+                    "is_csv": True
+                })
+                logger.info(f"成功處理 CSV 文件: {filename}")
+
+            except Exception as e:
+                logger.error(f"處理 CSV 文件 {filename} 時發生錯誤: {str(e)}", exc_info=True)
+        return documents
+    
+    @staticmethod
+    def split_documents(documents: List[Dict], chunk_size: int = CHUNK_SIZE, 
+                    chunk_overlap: int = CHUNK_OVERLAP) -> List[Dict]:
         """將文檔切分為小塊"""
         if not documents:
             logger.warning("未提供文檔供分塊處理。")
             return []
 
-        logger.info(f"使用分塊設置: chunk_size={chunk_size}, chunk_overlap={chunk_overlap}")
-
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            separators=["\n\n", "\n", "。", "，", "！", "？", " ", ""]
-        )
-
         chunks = []
-        for i, doc in enumerate(documents):
-            texts = text_splitter.split_text(doc["text"])
-            logger.info(f"將文檔 '{doc['filename']}' 分為 {len(texts)} 個文本塊")
-
-            for i, text_chunk in enumerate(texts):
-                has_image_desc = "圖片描述" in text_chunk or "[圖片內容:" in text_chunk or "[圖片:" in text_chunk or "【圖片描述" in text_chunk
-
-                chunk_id = f"{doc['filename']}_chunk_{i}"
-                chunks.append({
-                    "chunk_id": chunk_id,
-                    "text": text_chunk,
-                    "source": doc["filename"],
-                    "path": doc["path"],
-                    "contains_image": has_image_desc
-                })
+        for doc in documents:
+            # 針對CSV文件應用固定的chunking參數
+            if doc.get("is_csv", False):
+                csv_chunk_size = 1024  # 固定CSV的chunk_size為1024
+                csv_chunk_overlap = 256  # 固定CSV的chunk_overlap為256
+                logger.info(f"處理CSV文件: {doc['filename']} 使用特定分塊設置: chunk_size={csv_chunk_size}, chunk_overlap={csv_chunk_overlap}")
+                
+                # 處理CSV文件的特殊分塊邏輯 - 根據字符長度而非行數進行分塊
+                lines = doc["text"].split('\n')
+                lines = [line for line in lines if line.strip()]  # 過濾空行
+                
+                current_chunk_text = ""
+                line_index = 0
+                
+                while line_index < len(lines):
+                    line = lines[line_index]
+                    
+                    # 如果當前行加入後會超過chunk_size，則創建新chunk
+                    if len(current_chunk_text) + len(line) > csv_chunk_size and current_chunk_text:
+                        chunk_id = f"{doc['filename']}_chunk_{len(chunks)}"
+                        chunks.append({
+                            "chunk_id": chunk_id,
+                            "text": current_chunk_text,
+                            "source": doc["filename"],
+                            "path": doc["path"],
+                            "contains_image": False  # CSV不包含圖片
+                        })
+                        
+                        # 計算重疊部分
+                        # 找到重疊部分的起始行
+                        overlap_text = ""
+                        overlap_lines = []
+                        current_length = 0
+                        
+                        # 從當前chunk末尾反向找出足夠的行以滿足重疊需求
+                        temp_lines = current_chunk_text.split('\n')
+                        for i in range(len(temp_lines) - 1, -1, -1):
+                            line_length = len(temp_lines[i]) + 1  # +1 為換行符
+                            if current_length + line_length <= csv_chunk_overlap:
+                                overlap_lines.insert(0, temp_lines[i])
+                                current_length += line_length
+                            else:
+                                break
+                        
+                        current_chunk_text = '\n'.join(overlap_lines) if overlap_lines else ""
+                    
+                    # 將當前行加入到chunk
+                    if current_chunk_text and not current_chunk_text.endswith('\n'):
+                        current_chunk_text += '\n'
+                    current_chunk_text += line
+                    line_index += 1
+                    
+                # 確保最後一個chunk也被處理
+                if current_chunk_text:
+                    chunk_id = f"{doc['filename']}_chunk_{len(chunks)}"
+                    chunks.append({
+                        "chunk_id": chunk_id,
+                        "text": current_chunk_text,
+                        "source": doc["filename"],
+                        "path": doc["path"],
+                        "contains_image": False
+                    })
+                
+                logger.info(f"CSV文件 {doc['filename']} 分為 {len(chunks) - len([c for c in chunks if c['source'] != doc['filename']])} 個文本塊")
+                
+            else:
+                # 對於非CSV文件(如PDF)，使用config中的參數
+                logger.info(f"處理非CSV文件: {doc['filename']} 使用配置分塊設置: chunk_size={chunk_size}, chunk_overlap={chunk_overlap}")
+                
+                text_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
+                    separators=["\n\n", "\n", "。", "，", "！", "？", " ", ""]
+                )
+                
+                texts = text_splitter.split_text(doc["text"])
+                logger.info(f"非CSV文件 '{doc['filename']}' 分為 {len(texts)} 個文本塊")
+                
+                for i, text_chunk in enumerate(texts):
+                    has_image_desc = "圖片描述" in text_chunk or "[圖片內容:" in text_chunk or "[圖片:" in text_chunk or "【圖片描述" in text_chunk
+                    
+                    chunk_id = f"{doc['filename']}_chunk_{i}"
+                    chunks.append({
+                        "chunk_id": chunk_id,
+                        "text": text_chunk,
+                        "source": doc["filename"],
+                        "path": doc["path"],
+                        "contains_image": has_image_desc
+                    })
 
         image_chunks = sum(1 for c in chunks if c.get("contains_image", False))
         if image_chunks > 0:
             logger.info(f"共有 {image_chunks} 個文本塊包含圖片描述")
 
+        logger.info(f"文檔分塊完成，總共生成 {len(chunks)} 個文本塊")
         return chunks
 
     @classmethod
     def process_documents(cls, directory: str, use_inline_images: bool = True) -> List[Dict]:
-        """處理PDF文檔的主入口方法
-        
+        """處理PDF和CSV文檔的主入口方法
+    
         參數:
             directory: 文檔目錄
             use_inline_images: 是否將圖片描述插入到原始位置，需要安裝pdfplumber
