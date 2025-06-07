@@ -48,7 +48,7 @@ class DataMiningProcessor:
                 row_data = []
                 for col in header_list:
                     row_data.append(f"{col}: {row[col]}")
-                processed_text += ", ".join(row_data) + "\n"
+                processed_text += " | ".join(row_data) + "\n"
             
             logger.info(f"CSV文件 {file_path} 處理完成")
             return processed_text

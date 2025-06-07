@@ -4,7 +4,8 @@ import os
 import sys
 import logging
 import traceback
-from config import PDF_DIR, CHROMA_DB_DIR, CHROMA_COLLECTION_NAME, CHUNK_SIZE, CHUNK_OVERLAP
+import json
+from config import PDF_DIR, CHROMA_DB_DIR, CHROMA_COLLECTION_NAME, CHUNK_SIZE, CHUNK_OVERLAP, CHUNK_CACHE_DIR, CACHE_ROOT_DIR
 from document_processor import DocumentProcessor
 from vector_store import ChromaVectorStore
 from rag_engine import RAGEngine
@@ -120,6 +121,104 @@ def create_vector_embeddings(vector_store, chunks):
         logger.error(f"添加文檔到向量存儲時發生錯誤: {e}", exc_info=True)
         return 0
 
+def process_incremental_documents(vector_store):
+    """
+    增量處理文檔:
+    1. 檢查是否有新檔案
+    2. 檢查文件是否有緩存
+    3. 確認緩存資料是否在DB中
+    4. 如無緩存，進行chunking和embedding
+    """
+    logger.info("開始增量處理文檔...")
+    
+    # 獲取所有文件路徑
+    all_files = []
+    for file_type in ['.pdf', '.csv']:
+        all_files.extend([f for f in os.listdir(PDF_DIR) if f.lower().endswith(file_type)])
+    
+    if not all_files:
+        logger.info("沒有找到任何文檔")
+        return []
+        
+    logger.info(f"找到 {len(all_files)} 個文檔文件")
+    
+    # 獲取DB中已有的文檔來源
+    existing_sources = vector_store.get_all_document_sources()
+    logger.info(f"向量數據庫中已有 {len(existing_sources)} 個文檔來源")
+    
+    # 需要處理的新文檔和已有緩存但未入庫的文檔
+    new_chunks = []
+    
+    for filename in all_files:
+        file_path = os.path.join(PDF_DIR, filename)
+        
+        # 1. 檢查文件是否已在DB中
+        if filename in existing_sources:
+            logger.info(f"文檔 {filename} 已在數據庫中，跳過處理")
+            continue
+            
+        # 2. 檢查文件是否有chunk緩存
+        cache_file = os.path.join(CHUNK_CACHE_DIR, f"{filename}_chunks.json")
+        cached_chunks = []
+        
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    cached_chunks = json.load(f)
+                logger.info(f"找到文檔 {filename} 的緩存: {len(cached_chunks)} 個chunk")
+                
+                # 3. 確認緩存資料是否已在DB中 (根據chunk_id檢查)
+                chunk_ids = [chunk["chunk_id"] for chunk in cached_chunks]
+                existing_chunks = vector_store.check_chunks_exist(chunk_ids)
+                
+                if not existing_chunks:
+                    # 緩存的chunks不在DB中，加入處理列表
+                    new_chunks.extend(cached_chunks)
+                    logger.info(f"文檔 {filename} 的緩存chunks不在DB中，將使用緩存進行處理")
+                else:
+                    logger.info(f"文檔 {filename} 的部分或全部chunks已在DB中")
+                    
+                continue
+            except Exception as e:
+                logger.warning(f"讀取緩存文件 {cache_file} 失敗: {e}")
+                # 緩存讀取失敗，進行正常處理
+        
+        # 4. 如果沒有緩存或緩存無效，進行正常處理
+        logger.info(f"開始處理文檔: {filename}")
+        
+        try:
+            # 根據文件類型選擇處理方法
+            if filename.lower().endswith('.pdf'):
+                docs = DocumentProcessor.load_pdf_documents_with_inline_images(PDF_DIR, filename_filter=filename)
+            elif filename.lower().endswith('.csv'):
+                docs = DocumentProcessor.load_csv_documents(PDF_DIR, filename_filter=filename)
+            else:
+                logger.warning(f"不支持的文件類型: {filename}")
+                continue
+                
+            if docs:
+                # 分塊處理
+                file_chunks = DocumentProcessor.split_documents(docs)
+                
+                if file_chunks:
+                    # 保存chunk緩存
+                    try:
+                        with open(cache_file, 'w', encoding='utf-8') as f:
+                            json.dump(file_chunks, f, ensure_ascii=False, indent=2, 
+                                     default=lambda x: str(x) if not isinstance(x, (dict, list, str, int, float, bool, type(None))) else x)
+                        logger.info(f"已保存文檔 {filename} 的chunk緩存: {len(file_chunks)} 個chunk")
+                    except Exception as e:
+                        logger.warning(f"保存chunk緩存失敗: {e}")
+                    
+                    # 加入待處理列表
+                    new_chunks.extend(file_chunks)
+                
+        except Exception as e:
+            logger.error(f"處理文檔 {filename} 時出錯: {e}", exc_info=True)
+    
+    logger.info(f"增量處理完成，共發現 {len(new_chunks)} 個新的chunks")
+    return new_chunks
+
 def initialize_system():
     """
     初始化RAG系統，包括:
@@ -141,8 +240,10 @@ def initialize_system():
     logger.info("RAG Web應用初始化程序")
     
     # 確保必要的目錄存在
+    # 確保基本目錄存在
     os.makedirs(PDF_DIR, exist_ok=True)
     os.makedirs(CHROMA_DB_DIR, exist_ok=True)
+    os.makedirs(CACHE_ROOT_DIR, exist_ok=True)
     
     db_info = {
         'db_dir': CHROMA_DB_DIR,
@@ -160,14 +261,30 @@ def initialize_system():
         if existing_doc_count > 0:
             logger.info(f"找到現有的向量數據庫集合 '{CHROMA_COLLECTION_NAME}'")
             logger.info(f"集合中已存在 {existing_doc_count} 個文檔塊")
-            logger.info("將直接使用現有數據庫，跳過文檔重新處理和嵌入步驟")
-            db_info['status'] = f'已載入 ({existing_doc_count} 文檔塊)'
+            
+            # 增加檢查是否有新文檔的邏輯
+            logger.info("檢查是否有新增文檔...")
+            
+            new_chunks = process_incremental_documents(vector_store)
+            
+            if new_chunks:
+                logger.info(f"發現 {len(new_chunks)} 個新文檔塊，準備添加到向量數據庫")
+                added_count = create_vector_embeddings(vector_store, new_chunks)
+                if added_count > 0:
+                    logger.info(f"成功添加 {added_count} 個新文檔塊")
+                    db_info['status'] = f'已載入 ({existing_doc_count + added_count} 文檔塊)'
+                else:
+                    logger.warning("未能成功添加任何新文檔塊")
+                    db_info['status'] = f'已載入 ({existing_doc_count} 文檔塊)'
+            else:
+                logger.info("未發現新文檔或所有文檔已處理")
+                db_info['status'] = f'已載入 ({existing_doc_count} 文檔塊)'
         else:
             logger.info(f"未在集合 '{CHROMA_COLLECTION_NAME}' 中找到現有數據，或集合為空")
             logger.info("開始檢查並處理文檔以建立向量數據庫...")
             db_info['status'] = '正在創建...'
             
-            # 處理 PDF 和 CSV 文件
+            # 處理所有文檔
             chunks = process_documents()
             if not chunks:
                 db_info['status'] = '錯誤：文檔處理失敗'

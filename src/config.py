@@ -14,7 +14,12 @@ AZURE_OPENAI_VERSION = os.getenv("AZURE_OPENAI_VERSION")
 # 文件路徑
 PDF_DIR = os.path.join(os.path.dirname(__file__), "../data/documents")
 CHROMA_DB_DIR = os.path.join(os.path.dirname(__file__), "../data/chroma_db")
-IMAGE_CACHE_DIR = os.path.join(os.path.dirname(__file__), "../data/_image_cache")
+
+# 緩存目錄結構
+CACHE_ROOT_DIR = os.path.join(os.path.dirname(__file__), "../data/cache")
+IMAGE_CACHE_DIR = os.path.join(CACHE_ROOT_DIR, "images")
+EMBEDDING_CACHE_DIR = os.path.join(CACHE_ROOT_DIR, "embeddings") 
+CHUNK_CACHE_DIR = os.path.join(CACHE_ROOT_DIR, "chunks")
 
 # 文本處理配置
 CHUNK_SIZE = 512

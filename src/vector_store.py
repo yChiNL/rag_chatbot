@@ -11,11 +11,10 @@ from config import (
     AZURE_OPENAI_API_KEY, 
     AZURE_OPENAI_ENDPOINT, 
     AZURE_EMBEDDING_DEPLOYMENT_NAME,
-    AZURE_OPENAI_VERSION
+    AZURE_OPENAI_VERSION,
+    CACHE_ROOT_DIR,
+    EMBEDDING_CACHE_DIR
 )
-
-# 定義緩存目錄
-EMBEDDING_CACHE_DIR = os.path.join(os.path.dirname(__file__), "../data/embedding_cache")
 
 # 獲取logger
 logger = logging.getLogger(__name__)
@@ -32,33 +31,18 @@ class EmbeddingGenerator:
         )
         self.deployment_name = AZURE_EMBEDDING_DEPLOYMENT_NAME
         
-        # 確保緩存目錄存在
+        # 確保嵌入緩存目錄存在
+        os.makedirs(CACHE_ROOT_DIR, exist_ok=True)
         os.makedirs(EMBEDDING_CACHE_DIR, exist_ok=True)
+        
+        # 緩存信息
         self.cache_info_path = os.path.join(EMBEDDING_CACHE_DIR, "cache_info.json")
         self.cache_info = self._load_cache_info()
         
         logger.info(f"嵌入生成器初始化完成，使用部署: {self.deployment_name}")
         logger.info(f"嵌入緩存目錄: {EMBEDDING_CACHE_DIR}")
         logger.info(f"載入了 {len(self.cache_info)} 個緩存項")
-    
-    def _load_cache_info(self) -> Dict:
-        """載入緩存信息"""
-        if os.path.exists(self.cache_info_path):
-            try:
-                with open(self.cache_info_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.warning(f"載入緩存信息時出錯: {e}，將創建新的緩存")
-        return {}
-    
-    def _save_cache_info(self):
-        """保存緩存信息"""
-        try:
-            with open(self.cache_info_path, 'w', encoding='utf-8') as f:
-                json.dump(self.cache_info, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.warning(f"保存緩存信息時出錯: {e}")
-    
+
     def _get_text_hash(self, text: str) -> str:
         """計算文本的雜湊值作為緩存鍵"""
         return hashlib.md5(text.encode('utf-8')).hexdigest()
@@ -75,6 +59,16 @@ class EmbeddingGenerator:
                     logger.warning(f"讀取緩存文件 {text_hash} 時出錯: {e}")
         return None
     
+    def _load_cache_info(self) -> Dict:
+        """載入緩存信息"""
+        if os.path.exists(self.cache_info_path):
+            try:
+                with open(self.cache_info_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(f"載入緩存信息時出錯: {e}，將創建新的緩存")
+        return {}
+    
     def _save_to_cache(self, text_hash: str, embedding: List[float]):
         """將向量嵌入保存到緩存"""
         cache_file = os.path.join(EMBEDDING_CACHE_DIR, f"{text_hash}.json")
@@ -90,6 +84,14 @@ class EmbeddingGenerator:
             self._save_cache_info()
         except Exception as e:
             logger.warning(f"保存緩存文件 {text_hash} 時出錯: {e}")
+
+    def _save_cache_info(self):
+        """保存緩存信息"""
+        try:
+            with open(self.cache_info_path, 'w', encoding='utf-8') as f:
+                json.dump(self.cache_info, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"保存緩存信息時出錯: {e}")
     
     def generate_embeddings(self, texts: List[str]) -> List[Optional[List[float]]]:
         """為一組文本生成嵌入向量，優先從緩存中獲取"""
@@ -223,7 +225,7 @@ class ChromaVectorStore:
             return 0
         
     def add_documents(self, chunks: List[Dict]) -> int:
-        """將文檔塊添加到向量存儲"""
+        """將文檔塊添加到向量存儲，支持批次處理"""
         if not chunks:
             logger.warning("沒有文檔塊需要添加到向量存儲。")
             return 0
@@ -263,28 +265,46 @@ class ChromaVectorStore:
             logger.error("沒有任何文檔塊成功生成嵌入，無法添加到數據庫。")
             return 0
 
+        # 使用批次處理添加文檔
+        max_batch_size = 1000  # 設置一個安全的批次大小，遠低於限制
+        total_added = 0
+        
         try:
-            logger.info(f"正在將 {len(valid_data)} 個文檔塊添加到集合 '{self.collection_name}'...")
+            logger.info(f"開始批次添加 {len(valid_data)} 個文檔塊到集合 '{self.collection_name}'...")
             
-            # 準備批量添加的數據
-            add_ids = [item["id"] for item in valid_data]
-            add_embeddings = [item["embedding"] for item in valid_data]
-            add_documents = [item["text"] for item in valid_data]
-            add_metadatas = [item["metadata"] for item in valid_data]
+            # 分批處理
+            for i in range(0, len(valid_data), max_batch_size):
+                batch = valid_data[i:i+max_batch_size]
+                batch_size = len(batch)
+                
+                logger.info(f"處理批次 {i//max_batch_size + 1}/{(len(valid_data)-1)//max_batch_size + 1}: {batch_size} 個文檔塊")
+                
+                # 準備批量添加的數據
+                add_ids = [item["id"] for item in batch]
+                add_embeddings = [item["embedding"] for item in batch]
+                add_documents = [item["text"] for item in batch]
+                add_metadatas = [item["metadata"] for item in batch]
+                
+                # 添加當前批次
+                self.collection.add(
+                    ids=add_ids,
+                    embeddings=add_embeddings,
+                    documents=add_documents,
+                    metadatas=add_metadatas
+                )
+                
+                total_added += batch_size
+                logger.info(f"成功添加批次 {i//max_batch_size + 1}, 總計已添加: {total_added}/{len(valid_data)}")
             
-            self.collection.add(
-                ids=add_ids,
-                embeddings=add_embeddings,
-                documents=add_documents,
-                metadatas=add_metadatas
-            )
-            
-            logger.info(f"成功添加/更新 {len(valid_data)} 個文檔塊。")
-            return len(valid_data)
+            logger.info(f"成功添加/更新所有 {total_added} 個文檔塊。")
+            return total_added
             
         except Exception as e:
             logger.error(f"向集合 '{self.collection_name}' 添加文檔時出錯: {e}", exc_info=True)
-            return 0
+            # 如果部分批次已成功添加，返回已添加的數量
+            if total_added > 0:
+                logger.warning(f"部分添加成功：已添加 {total_added} 個文檔塊")
+            return total_added
     
     def search(self, query: str, limit: int = 5) -> List[Dict]:
         """
@@ -347,3 +367,37 @@ class ChromaVectorStore:
             logger.warning("搜索未返回任何文檔，或結果格式不符合預期。")
 
         return documents
+    
+    def check_chunks_exist(self, chunk_ids: List[str]) -> List[str]:
+        """檢查指定chunk_id是否已存在於數據庫中"""
+        try:
+            existing_ids = []
+            # 分批檢查以避免請求過大
+            batch_size = 100
+            for i in range(0, len(chunk_ids), batch_size):
+                batch_ids = chunk_ids[i:i+batch_size]
+                # ChromaDB的get方法會返回找到的ID
+                results = self.collection.get(ids=batch_ids, include=[])
+                if results and results.get("ids"):
+                    existing_ids.extend(results["ids"])
+            
+            return existing_ids
+        except Exception as e:
+            logger.error(f"檢查chunks存在性時出錯: {e}", exc_info=True)
+            return []
+    
+    def get_all_document_sources(self) -> List[str]:
+        """獲取向量存儲中所有文檔的來源名稱"""
+        try:
+            result = self.collection.get(include=["metadatas"])
+            if result and result.get("metadatas"):
+                # 從metadata中提取來源檔名
+                sources = set()
+                for metadata in result["metadatas"]:
+                    if metadata and "source" in metadata:
+                        sources.add(metadata["source"])
+                return list(sources)
+            return []
+        except Exception as e:
+            logger.error(f"獲取文檔來源時出錯: {e}", exc_info=True)
+            return []

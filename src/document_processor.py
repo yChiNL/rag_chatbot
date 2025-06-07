@@ -19,6 +19,8 @@ from config import (
     AZURE_OPENAI_ENDPOINT,
     AZURE_OPENAI_VERSION,
     AZURE_VISION_MINI_DEPLOYMENT_NAME,
+    CACHE_ROOT_DIR,
+    CHUNK_CACHE_DIR,
     IMAGE_CACHE_DIR
 )
 
@@ -41,6 +43,10 @@ class DocumentProcessor:
     @staticmethod
     def get_image_description(image, client, source_info="") -> str:
         """使用GPT-4o獲取圖片描述，包含來源信息"""
+        # 確保圖片緩存目錄存在
+        os.makedirs(CACHE_ROOT_DIR, exist_ok=True)
+        os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
+        
         try:
             # 系統提示的基本部分
             with open(os.path.join(os.path.dirname(__file__), "prompts.yaml"), 'r', encoding='utf-8') as f:
@@ -89,6 +95,8 @@ class DocumentProcessor:
     @staticmethod
     def load_pdf_documents(directory: str) -> List[Dict]:
         """加載所有PDF文件，並為圖片頁面生成描述"""
+        os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
+
         documents = []
         pdf_files = [f for f in os.listdir(directory) if f.lower().endswith('.pdf')]
 
@@ -107,9 +115,6 @@ class DocumentProcessor:
         except Exception as e:
             logger.error(f"初始化OpenAI客戶端失敗: {e}", exc_info=True)
             client = None
-
-        cache_dir = IMAGE_CACHE_DIR
-        os.makedirs(cache_dir, exist_ok=True)
 
         for filename in pdf_files:
             file_path = os.path.join(directory, filename)
@@ -139,7 +144,7 @@ class DocumentProcessor:
                             for page_num_desc in pages_needing_image_desc:
                                 if page_num_desc < len(images):
                                     image_id = f"{filename.replace('.pdf', '')}_page{page_num_desc+1}"
-                                    desc_file = os.path.join(cache_dir, f"{image_id}.txt")
+                                    desc_file = os.path.join(IMAGE_CACHE_DIR, f"{image_id}.txt")
                                     source_info = f"{filename} (頁面 {page_num_desc+1})"
 
                                     if os.path.exists(desc_file):
@@ -187,9 +192,16 @@ class DocumentProcessor:
         return documents
 
     @staticmethod
-    def load_pdf_documents_with_inline_images(directory: str) -> List[Dict]:
+    def load_pdf_documents_with_inline_images(directory: str, filename_filter: str = None) -> List[Dict]:
+        """加載所有PDF文件，並將圖片描述插入到原始位置"""
+        os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
         documents = []
-        pdf_files = [f for f in os.listdir(directory) if f.lower().endswith('.pdf')]
+        # 允許過濾特定文件
+        if filename_filter:
+            pdf_files = [filename_filter] if os.path.exists(os.path.join(directory, filename_filter)) else []
+        else:
+            pdf_files = [f for f in os.listdir(directory) if f.lower().endswith('.pdf')]
+
 
         if not pdf_files:
             logger.warning(f"在目錄 '{directory}' 中未找到任何PDF文檔。")
@@ -206,9 +218,6 @@ class DocumentProcessor:
         except Exception as e:
             logger.error(f"初始化OpenAI客戶端失敗: {e}", exc_info=True)
             client = None
-
-        cache_dir = IMAGE_CACHE_DIR
-        os.makedirs(cache_dir, exist_ok=True)
 
         conda_prefix = os.environ.get('CONDA_PREFIX')
         poppler_path = os.path.join(conda_prefix, 'bin') if conda_prefix else None
@@ -236,7 +245,7 @@ class DocumentProcessor:
                         if page_has_images_flag or DocumentProcessor.is_page_mostly_image(page_text_from_pdf):
                             if page_num < len(page_images_for_pdf) and client:
                                 image_id = f"{filename.replace('.pdf', '')}_page{page_num+1}"
-                                desc_file = os.path.join(cache_dir, f"{image_id}.txt")
+                                desc_file = os.path.join(IMAGE_CACHE_DIR, f"{image_id}.txt")
                                 source_info = f"{filename} (頁面 {page_num+1})"
                                 image_desc = ""
 
@@ -278,10 +287,14 @@ class DocumentProcessor:
         return documents
 
     @staticmethod
-    def load_csv_documents(directory: str) -> List[Dict]:
+    def load_csv_documents(directory: str, filename_filter: str = None) -> List[Dict]:
         """加載所有 CSV 檔案並進行資料前處理"""
         documents = []
-        csv_files = [f for f in os.listdir(directory) if f.lower().endswith('.csv')]
+        # 允許過濾特定文件
+        if filename_filter:
+            csv_files = [filename_filter] if os.path.exists(os.path.join(directory, filename_filter)) else []
+        else:
+            csv_files = [f for f in os.listdir(directory) if f.lower().endswith('.csv')]
 
         if not csv_files:
             logger.warning(f"在目錄 '{directory}' 中未找到任何 CSV 檔案。")
@@ -420,19 +433,31 @@ class DocumentProcessor:
             directory: 文檔目錄
             use_inline_images: 是否將圖片描述插入到原始位置，需要安裝pdfplumber
         """
+        os.makedirs(CACHE_ROOT_DIR, exist_ok=True)
+        os.makedirs(CHUNK_CACHE_DIR, exist_ok=True)
         logger.info(f"開始處理目錄 '{directory}' 中的文檔...")
 
+        # 處理 CSV 文檔 (無論使用何種 PDF 處理模式都應處理 CSV)
+        csv_documents = cls.load_csv_documents(directory)
+        logger.info(f"已處理 {len(csv_documents)} 個 CSV 檔案")
+
+        # 處理 PDF 文檔
+        pdf_documents = []
         if use_inline_images:
             logger.info("使用內聯圖片描述模式")
             try:
-                documents = cls.load_pdf_documents_with_inline_images(directory)
+                pdf_documents = cls.load_pdf_documents_with_inline_images(directory)
             except ImportError:
                 logger.warning("未安裝pdfplumber，回退到標準處理模式")
-                documents = cls.load_pdf_documents(directory)
+                pdf_documents = cls.load_pdf_documents(directory)
         else:
             logger.info("使用標準處理模式")
-            documents = cls.load_pdf_documents(directory)
+            pdf_documents = cls.load_pdf_documents(directory)
 
+        logger.info(f"已處理 {len(pdf_documents)} 個 PDF 檔案")
+
+        #合併 CSV 和 PDF 文檔
+        documents = csv_documents + pdf_documents
         if not documents:
             logger.warning("沒有找到任何PDF文檔或所有文檔解析失敗。")
             return []

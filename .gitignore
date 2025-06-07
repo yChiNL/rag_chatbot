@@ -3,7 +3,6 @@
 .env
 
 # folder
-data/_image_cache
-data/embedding_cache
+data/cache
 __pycache__/
 chroma_db/
